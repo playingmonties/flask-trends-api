@@ -52,8 +52,9 @@ def trends():
                 # Create fresh instance for each attempt
                 pytrends = TrendReq(hl='en-US', tz=0, timeout=(10, 25))
                 
-                # Pull last 30 days of data (don't specify geo to use global)
-                pytrends.build_payload(validated_keywords, timeframe="now 30-d")
+                # Pull last 30 days of data (use "today 1-m" for ~30 days, or "now 7-d" for last 7 days)
+                # Google Trends doesn't support "now 30-d", so we use "today 1-m" for approximately 30 days
+                pytrends.build_payload(validated_keywords, timeframe="today 1-m")
                 data = pytrends.interest_over_time()
                 
                 # If we got data, break out of retry loop
