@@ -1,45 +1,85 @@
 from flask import Flask, request, jsonify
 from pytrends.request import TrendReq
 from datetime import datetime
+import traceback
+import pandas as pd
 
 app = Flask(__name__)
-pytrends = TrendReq(hl='en-US', tz=0)
 
 @app.route("/trends", methods=["GET"])
 def trends():
-    # Read keyword(s)
-    keywords = request.args.get("keywords")
-    if not keywords:
-        return jsonify({"error": "keywords parameter required"}), 400
+    try:
+        # Read keyword(s)
+        keywords = request.args.get("keywords")
+        if not keywords:
+            return jsonify({"error": "keywords parameter required"}), 400
 
-    keyword_list = [k.strip() for k in keywords.split(",")]
+        keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+        
+        if not keyword_list:
+            return jsonify({"error": "at least one valid keyword required"}), 400
 
-    # Pull last 30 days of data
-    pytrends.build_payload(keyword_list, timeframe="now 30-d")
+        # Create a new TrendReq instance for each request to avoid rate limiting issues
+        pytrends = TrendReq(hl='en-US', tz=0, timeout=(10, 25))
+        
+        # Pull last 30 days of data
+        pytrends.build_payload(keyword_list, timeframe="now 30-d")
+        data = pytrends.interest_over_time()
 
-    data = pytrends.interest_over_time()
+        if data.empty:
+            return jsonify({"error": "no data returned from Google Trends"}), 404
 
-    if data.empty:
-        return jsonify({"error": "no data returned"}), 404
+        # Format output cleanly
+        output = []
 
-    # Format output cleanly
-    output = []
-
-    for k in keyword_list:
-        series = []
-        for index, row in data.iterrows():
-            if not row.get('isPartial', False):
-                series.append({
-                    "date": index.strftime("%Y-%m-%d"),
-                    "value": int(row[k])
+        for original_keyword in keyword_list:
+            series = []
+            # Find the actual column name in the dataframe (pytrends may modify it)
+            keyword_col = None
+            for col in data.columns:
+                if col == 'isPartial':
+                    continue
+                # Check if this column matches our keyword
+                if col == original_keyword or original_keyword.lower() in col.lower():
+                    keyword_col = col
+                    break
+            
+            if not keyword_col:
+                output.append({
+                    "keyword": original_keyword,
+                    "data": [],
+                    "error": "keyword not found in results"
                 })
+                continue
+            
+            for index, row in data.iterrows():
+                if not row.get('isPartial', False):
+                    try:
+                        value = int(row[keyword_col]) if pd.notna(row[keyword_col]) else 0
+                        series.append({
+                            "date": index.strftime("%Y-%m-%d"),
+                            "value": value
+                        })
+                    except (ValueError, KeyError, TypeError):
+                        continue
 
-        output.append({
-            "keyword": k,
-            "data": series
-        })
+            output.append({
+                "keyword": original_keyword,
+                "data": series
+            })
 
-    return jsonify(output)
+        return jsonify(output)
+    
+    except Exception as e:
+        # Log the error for debugging
+        error_msg = str(e)
+        error_trace = traceback.format_exc()
+        print(f"Error in trends endpoint: {error_msg}")
+        print(f"Traceback: {error_trace}")
+        return jsonify({
+            "error": "Internal server error",
+            "message": error_msg
+        }), 500
 
 @app.route("/", methods=["GET"])
 def root():
