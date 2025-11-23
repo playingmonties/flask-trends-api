@@ -43,7 +43,6 @@ def trends():
         # Create a new TrendReq instance for each request
         # Add retries with exponential backoff for rate limiting
         max_retries = 3
-        retry_delay = 2
         data = pd.DataFrame()  # Initialize empty dataframe
         last_error = None
         
@@ -68,14 +67,31 @@ def trends():
                 last_error = error_msg
                 print(f"Attempt {attempt + 1} failed: {error_msg}")
                 
-                # If it's a 400 error and not the last attempt, wait and retry
-                if ("400" in error_msg or "rate limit" in error_msg.lower()) and attempt < max_retries - 1:
-                    wait_time = retry_delay * (attempt + 1)  # Exponential backoff
-                    print(f"Waiting {wait_time} seconds before retry...")
+                # Handle 429 (rate limit) errors with longer backoff
+                if "429" in error_msg:
+                    if attempt < max_retries - 1:
+                        # For 429 errors, use longer exponential backoff: 30s, 60s, 120s
+                        wait_time = 30 * (2 ** attempt)
+                        print(f"Rate limited (429). Waiting {wait_time} seconds before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        # Last attempt failed with 429
+                        return jsonify({
+                            "error": "Rate limit exceeded",
+                            "message": "Google Trends has rate-limited this service. Please wait a few minutes before making another request.",
+                            "retry_after": "2-5 minutes"
+                        }), 429
+                
+                # Handle 400 errors with shorter backoff
+                elif "400" in error_msg and attempt < max_retries - 1:
+                    wait_time = 5 * (attempt + 1)  # 5s, 10s, 15s
+                    print(f"Bad request (400). Waiting {wait_time} seconds before retry...")
                     time.sleep(wait_time)
                     continue
+                
+                # For other errors or last attempt, raise it
                 elif attempt == max_retries - 1:
-                    # Last attempt failed, raise the error
                     raise
         
         # Check if we still have empty data after retries
@@ -132,6 +148,15 @@ def trends():
         error_trace = traceback.format_exc()
         print(f"Error in trends endpoint: {error_msg}")
         print(f"Traceback: {error_trace}")
+        
+        # Check if it's a rate limit error
+        if "429" in error_msg:
+            return jsonify({
+                "error": "Rate limit exceeded",
+                "message": "Google Trends has rate-limited this service. Please wait a few minutes before making another request.",
+                "retry_after": "2-5 minutes"
+            }), 429
+        
         return jsonify({
             "error": "Internal server error",
             "message": error_msg
